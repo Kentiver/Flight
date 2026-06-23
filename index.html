@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Flight Radar — Mosjøen</title>
+
+<!-- Leaflet map -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --green:#00ff41;
+  --green-dim:rgba(0,255,65,0.55);
+  --green-faint:rgba(0,255,65,0.18);
+  --green-ghost:rgba(0,255,65,0.07);
+  --red:#ff4141;
+}
+
+html,body{
+  background:#0a0f0a;
+  color:var(--green);
+  font-family:'Share Tech Mono','Courier New',monospace;
+  height:100%;
+  overflow:hidden;
+}
+
+/* scanlines */
+body::after{
+  content:'';position:fixed;inset:0;
+  background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,255,65,0.018) 3px,rgba(0,255,65,0.018) 4px);
+  pointer-events:none;z-index:9999;
+}
+
+/* ── layout ── */
+#app{display:flex;flex-direction:column;height:100vh;padding:10px;gap:8px}
+
+/* ── topbar ── */
+#topbar{
+  display:flex;justify-content:space-between;align-items:center;
+  border-bottom:1px solid var(--green-faint);padding-bottom:8px;flex-shrink:0;
+  gap:12px;flex-wrap:wrap;
+}
+.logo{font-size:16px;letter-spacing:4px;white-space:nowrap}
+.logo small{color:var(--green-dim);font-size:10px;letter-spacing:2px;margin-left:8px}
+
+#controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--green-dim)}
+
+/* search box */
+#search-wrap{position:relative;display:flex;align-items:center;gap:6px}
+#search-input{
+  background:#000e00;border:1px solid var(--green-faint);color:var(--green);
+  font-family:'Share Tech Mono',monospace;font-size:11px;
+  padding:4px 8px;outline:none;width:160px;
+}
+#search-input:focus{border-color:var(--green-dim)}
+#search-input::placeholder{color:rgba(0,255,65,0.3)}
+#search-btn{
+  background:transparent;border:1px solid var(--green-faint);color:var(--green-dim);
+  font-family:'Share Tech Mono',monospace;font-size:11px;padding:4px 10px;cursor:pointer;
+}
+#search-btn:hover{background:var(--green-ghost);color:var(--green)}
+#search-results{
+  position:absolute;top:100%;left:0;right:0;z-index:10000;
+  background:#000e00;border:1px solid var(--green-faint);
+  max-height:160px;overflow-y:auto;display:none;
+}
+.sr-item{padding:6px 8px;font-size:10px;cursor:pointer;border-bottom:1px solid var(--green-ghost)}
+.sr-item:hover{background:var(--green-ghost)}
+
+input[type=range]{
+  -webkit-appearance:none;appearance:none;width:80px;height:3px;
+  background:var(--green-faint);outline:none;cursor:pointer;
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:11px;height:11px;background:var(--green);border-radius:50%;
+}
+
+#blink{animation:blink 1s step-end infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+/* ── main ── */
+#main{display:flex;flex:1;gap:10px;min-height:0}
+
+/* ── map + radar overlay ── */
+#map-radar-wrap{
+  position:relative;flex-shrink:0;
+  border:1px solid var(--green-faint);
+}
+#map{width:100%;height:100%;background:#0a150a}
+
+/* Leaflet dark override */
+.leaflet-tile-pane{filter:invert(1) hue-rotate(100deg) saturate(0.7) brightness(0.45) contrast(1.1)}
+.leaflet-control-attribution{display:none}
+.leaflet-control-zoom a{
+  background:#000e00 !important;color:var(--green) !important;
+  border-color:var(--green-faint) !important;font-family:'Share Tech Mono',monospace !important;
+}
+.leaflet-control-zoom a:hover{background:var(--green-ghost) !important}
+
+/* radar SVG overlay — sits on top of map */
+#radar-svg{
+  position:absolute;top:0;left:0;width:100%;height:100%;
+  pointer-events:none;z-index:500;
+}
+
+/* aircraft tooltip */
+#ac-tooltip{
+  position:absolute;z-index:600;background:#000e00;border:1px solid var(--green-faint);
+  padding:4px 8px;font-size:10px;pointer-events:none;display:none;white-space:nowrap;
+}
+
+/* ── right panel ── */
+#panel{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0;overflow:hidden}
+
+#sel-card{
+  border:1px solid var(--green-faint);padding:10px 12px;font-size:11px;
+  line-height:2;flex-shrink:0;min-height:90px;background:#000a00;
+}
+.callsign-big{font-size:20px;letter-spacing:3px;margin-bottom:4px}
+.route-line{font-size:13px;letter-spacing:1px;margin-bottom:4px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+.lbl{color:var(--green-dim)}
+
+#list-section{flex:1;display:flex;flex-direction:column;min-height:0}
+#list-hdr{
+  display:grid;grid-template-columns:70px 50px 45px 45px 1fr;gap:4px;
+  font-size:10px;color:var(--green-dim);
+  border-bottom:1px solid var(--green-ghost);padding-bottom:4px;margin-bottom:4px;flex-shrink:0;
+}
+#flight-list{overflow-y:auto;flex:1;scrollbar-width:thin;scrollbar-color:var(--green-faint) transparent}
+#flight-list::-webkit-scrollbar{width:4px}
+#flight-list::-webkit-scrollbar-thumb{background:var(--green-faint)}
+
+.fl{
+  display:grid;grid-template-columns:70px 50px 45px 45px 1fr;gap:4px;
+  font-size:10px;padding:4px 0;border-bottom:1px solid var(--green-ghost);
+  cursor:pointer;transition:background 0.1s;align-items:center;
+}
+.fl:hover{background:var(--green-ghost)}
+.fl.sel{background:var(--green-faint)}
+.fl .cs{color:var(--green);font-size:11px}
+.fl .muted{color:var(--green-dim)}
+.fl .rs{color:var(--green-dim);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── bottom ── */
+#botbar{
+  display:flex;justify-content:space-between;font-size:10px;color:var(--green-dim);
+  border-top:1px solid var(--green-ghost);padding-top:6px;flex-shrink:0;
+}
+
+/* ── splash ── */
+#splash{
+  position:fixed;inset:0;background:#000e00;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:14px;z-index:99999;
+}
+#splash h1{font-size:26px;letter-spacing:6px}
+#splash p{font-size:11px;color:var(--green-dim);text-align:center;max-width:340px}
+.btn{
+  background:transparent;border:1px solid var(--green);color:var(--green);
+  font-family:'Share Tech Mono',monospace;font-size:13px;padding:9px 26px;
+  cursor:pointer;letter-spacing:2px;transition:background 0.15s;
+}
+.btn:hover{background:var(--green-ghost)}
+.btn.sec{border-color:var(--green-dim);color:var(--green-dim);font-size:11px;padding:7px 18px}
+#err-msg{color:var(--red);font-size:11px;min-height:14px}
+</style>
+</head>
+<body>
+
+<!-- SPLASH -->
+<div id="splash">
+  <div style="font-size:11px;letter-spacing:3px;color:var(--green-dim)">◈ SYSTEM READY</div>
+  <h1>FLIGHT RADAR</h1>
+  <p>Default position: Mosjøen, Nordland, Norway.<br>You can also use your own location.</p>
+  <button class="btn" onclick="useMosjoen()">◈ USE MOSJØEN</button>
+  <button class="btn sec" onclick="requestLoc()">USE MY LOCATION</button>
+  <div id="err-msg"></div>
+</div>
+
+<!-- APP -->
+<div id="app" style="display:none">
+  <div id="topbar">
+    <div class="logo">◈ FLIGHT RADAR <small id="pos-lbl">MOSJØEN, NORDLAND</small></div>
+    <div id="controls">
+      <!-- location search -->
+      <div id="search-wrap">
+        <input id="search-input" type="text" placeholder="Search city..." autocomplete="off" spellcheck="false">
+        <button id="search-btn" onclick="doSearch()">GO</button>
+        <div id="search-results"></div>
+      </div>
+      <!-- range -->
+      <label style="display:flex;align-items:center;gap:6px">
+        RANGE <input type="range" id="range-sl" min="50" max="500" value="200" step="25">
+        <span id="range-lbl">200 km</span>
+      </label>
+      <div><span id="blink">█</span> LIVE</div>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="map-radar-wrap">
+      <div id="map"></div>
+      <!-- SVG radar rings overlay -->
+      <svg id="radar-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      <!-- aircraft tooltip -->
+      <div id="ac-tooltip"></div>
+    </div>
+
+    <div id="panel">
+      <div id="sel-card">
+        <div style="color:var(--green-dim);font-size:11px">SELECT AN AIRCRAFT TO SEE DETAILS</div>
+      </div>
+      <div id="list-section">
+        <div id="list-hdr">
+          <span>CALLSIGN</span><span>ALT ft</span><span>HDG°</span><span>SPD kn</span><span>ROUTE</span>
+        </div>
+        <div id="flight-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="botbar">
+    <span id="traffic-lbl">TRAFFIC: —</span>
+    <span id="time-lbl"></span>
+    <span id="api-lbl"></span>
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────
+let userLat = 65.8342, userLon = 13.1920; // Mosjøen
+let radiusKm = 200;
+let flights = [];
+let selected = null;
+let map, centerMarker;
+const airports = {};
+const routeCache = {};
+const fetchingRoutes = new Set();
+let fetchInterval;
+
+// ── Airport data ──────────────────────────────────────────────────────────
+async function loadAirports() {
+  try {
+    const r = await fetch('https://raw.githubusercontent.com/datasets/airport-codes/master/data/airport-codes.csv');
+    const text = await r.text();
+    text.split('\n').slice(1).forEach(line => {
+      const c = parseCSV(line);
+      if (!c || c.length < 10) return;
+      const ident = c[0].replace(/"/g,'').trim();
+      const type  = c[1].replace(/"/g,'').trim();
+      if (!['large_airport','medium_airport','small_airport'].includes(type)) return;
+      airports[ident] = {
+        iata: c[9].replace(/"/g,'').trim(),
+        city: c[7].replace(/"/g,'').trim() || c[2].replace(/"/g,'').trim(),
+        country: c[5].replace(/"/g,'').trim()
+      };
+    });
+  } catch(e) { console.warn('Airport data unavailable'); }
+}
+
+function parseCSV(line) {
+  const r=[]; let cur='', inQ=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){inQ=!inQ}
+    else if(ch===','&&!inQ){r.push(cur);cur=''}
+    else{cur+=ch}
+  }
+  r.push(cur); return r;
+}
+
+function airportLabel(icao) {
+  if (!icao) return null;
+  const a = airports[icao.toUpperCase()];
+  if (a && a.city) return a.iata ? `${a.city} (${a.iata})` : a.city;
+  return icao.toUpperCase();
+}
+
+// ── Route fetch ───────────────────────────────────────────────────────────
+async function fetchRoute(icao24, callsign) {
+  if (routeCache[icao24] || fetchingRoutes.has(icao24)) return;
+  fetchingRoutes.add(icao24);
+  try {
+    const r = await fetch(`https://opensky-network.org/api/routes?callsign=${encodeURIComponent(callsign.trim())}`);
+    if (!r.ok) throw new Error();
+    const d = await r.json();
+    routeCache[icao24] = { origin: d.route?.[0]||null, dest: d.route?.[d.route.length-1]||null };
+  } catch { routeCache[icao24] = { origin:null, dest:null }; }
+  finally {
+    fetchingRoutes.delete(icao24);
+    renderList(); renderCard();
+  }
+}
+
+// ── Geo ───────────────────────────────────────────────────────────────────
+function haversine(la1,lo1,la2,lo2){
+  const R=6371,dLa=(la2-la1)*Math.PI/180,dLo=(lo2-lo1)*Math.PI/180;
+  const a=Math.sin(dLa/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+// ── Leaflet map init ──────────────────────────────────────────────────────
+function initMap() {
+  map = L.map('map', {
+    center: [userLat, userLon],
+    zoom: zoomForRadius(radiusKm),
+    zoomControl: true,
+    attributionControl: false
+  });
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18, minZoom: 4
+  }).addTo(map);
+
+  // centre crosshair
+  centerMarker = L.circleMarker([userLat, userLon], {
+    radius: 5, color: '#00ff41', fillColor: '#00ff41', fillOpacity: 0.9, weight: 1
+  }).addTo(map);
+
+  // redraw SVG overlay on map move/zoom
+  map.on('move zoom moveend zoomend', drawRadarOverlay);
+  map.on('click', () => { selected = null; renderCard(); renderList(); redrawBlips(); });
+
+  drawRadarOverlay();
+}
+
+function zoomForRadius(km) {
+  // rough mapping: 50km≈10, 100km≈9, 200km≈8, 400km≈7
+  if (km <= 60)  return 10;
+  if (km <= 110) return 9;
+  if (km <= 220) return 8;
+  if (km <= 380) return 7;
+  return 6;
+}
+
+// ── Radar SVG overlay (rings + sweep) ────────────────────────────────────
+let sweepAngle = 0;
+let sweepRaf;
+
+function drawRadarOverlay() {
+  const svg = document.getElementById('radar-svg');
+  const W = svg.clientWidth, H = svg.clientHeight;
+  if (!W || !H || !map) return;
+
+  // project centre to pixel
+  const cp = map.latLngToContainerPoint([userLat, userLon]);
+  const cx = cp.x, cy = cp.y;
+
+  // compute pixel radius for radiusKm
+  const edgeLat = userLat + (radiusKm / 111);
+  const ep = map.latLngToContainerPoint([edgeLat, userLon]);
+  const R = Math.abs(ep.y - cy);
+
+  svg.dataset.cx = cx; svg.dataset.cy = cy; svg.dataset.r = R;
+
+  // Build rings markup
+  const rings = [0.25, 0.5, 0.75, 1];
+  const ringsSVG = rings.map((f,i) => {
+    const kr = Math.round(radiusKm * f);
+    const lx = cx + 4, ly = cy - R*f + 12;
+    return `<circle cx="${cx}" cy="${cy}" r="${R*f}" fill="none" stroke="rgba(0,255,65,${0.09+i*0.05})" stroke-width="0.7"/>
+            <text x="${lx}" y="${ly}" fill="rgba(0,255,65,0.28)" font-size="9" font-family="Share Tech Mono,monospace">${kr}km</text>`;
+  }).join('');
+
+  // crosshair lines
+  const cross = [0,45,90,135].map(a => {
+    const rad = a*Math.PI/180;
+    return `<line x1="${cx+Math.cos(rad)*6}" y1="${cy+Math.sin(rad)*6}" x2="${cx+Math.cos(rad)*R}" y2="${cy+Math.sin(rad)*R}" stroke="rgba(0,255,65,0.1)" stroke-width="0.5"/>
+            <line x1="${cx-Math.cos(rad)*6}" y1="${cy-Math.sin(rad)*6}" x2="${cx-Math.cos(rad)*R}" y2="${cy-Math.sin(rad)*R}" stroke="rgba(0,255,65,0.1)" stroke-width="0.5"/>`;
+  }).join('');
+
+  // Cardinals
+  const dirs = [['N',270],['E',0],['S',90],['W',180]];
+  const cardSVG = dirs.map(([d,a]) => {
+    const rad=(a-90)*Math.PI/180;
+    return `<text x="${cx+Math.cos(rad)*(R-14)}" y="${cy+Math.sin(rad)*(R-14)+4}" text-anchor="middle" fill="rgba(0,255,65,0.35)" font-size="10" font-family="Share Tech Mono,monospace">${d}</text>`;
+  }).join('');
+
+  svg.innerHTML = `
+    <defs>
+      <clipPath id="radar-clip"><circle cx="${cx}" cy="${cy}" r="${R}"/></clipPath>
+    </defs>
+    <circle cx="${cx}" cy="${cy}" r="${R}" fill="rgba(0,20,0,0.08)"/>
+    ${ringsSVG}${cross}${cardSVG}
+    <g id="sweep-g" clip-path="url(#radar-clip)"></g>
+    <g id="blips-g"></g>
+    <circle cx="${cx}" cy="${cy}" r="4" fill="rgba(0,255,65,0.7)"/>
+  `;
+
+  redrawBlips();
+}
+
+function animateSweep() {
+  sweepAngle = (sweepAngle + 0.018) % (Math.PI*2);
+  const svg = document.getElementById('radar-svg');
+  const g = document.getElementById('sweep-g');
+  if (!g) { sweepRaf = requestAnimationFrame(animateSweep); return; }
+  const cx = +svg.dataset.cx, cy = +svg.dataset.cy, R = +svg.dataset.r;
+  if (!R) { sweepRaf = requestAnimationFrame(animateSweep); return; }
+
+  const trailLen = Math.PI * 0.65;
+  // build arc path for trail
+  const startA = sweepAngle - trailLen;
+  const x1 = cx + Math.cos(startA)*R, y1 = cy + Math.sin(startA)*R;
+  const x2 = cx + Math.cos(sweepAngle)*R, y2 = cy + Math.sin(sweepAngle)*R;
+  const lx = cx + Math.cos(sweepAngle)*R, ly = cy + Math.sin(sweepAngle)*R;
+
+  g.innerHTML = `
+    <path d="M${cx},${cy} L${x1},${y1} A${R},${R} 0 0,1 ${x2},${y2} Z" fill="rgba(0,255,65,0.05)"/>
+    <line x1="${cx}" y1="${cy}" x2="${lx}" y2="${ly}" stroke="rgba(0,255,65,0.8)" stroke-width="1.5"/>
+  `;
+  sweepRaf = requestAnimationFrame(animateSweep);
+}
+
+function redrawBlips() {
+  const svg = document.getElementById('radar-svg');
+  const g = document.getElementById('blips-g');
+  if (!g || !map) return;
+  const cx = +svg.dataset.cx, cy = +svg.dataset.cy, R = +svg.dataset.r;
+
+  g.innerHTML = flights.map(f => {
+    if (haversine(userLat,userLon,f.lat,f.lon) > radiusKm) return '';
+    const p = map.latLngToContainerPoint([f.lat, f.lon]);
+    const isSel = selected && selected.icao24 === f.icao24;
+    const col = isSel ? '#ffffff' : '#00ff41';
+    const r = isSel ? 6 : 3.5;
+
+    let headingLine = '';
+    if (f.heading != null) {
+      const hrad = (f.heading - 90)*Math.PI/180;
+      headingLine = `<line x1="${p.x}" y1="${p.y}" x2="${p.x+Math.cos(hrad)*10}" y2="${p.y+Math.sin(hrad)*10}" stroke="${col}" stroke-opacity="0.5" stroke-width="1"/>`;
+    }
+    const label = f.callsign ? `<text x="${p.x+7}" y="${p.y-2}" fill="rgba(0,255,65,${isSel?'0.95':'0.7'})" font-size="8" font-family="Share Tech Mono,monospace">${f.callsign.trim().slice(0,9)}</text>` : '';
+
+    return `<g class="blip" data-icao="${f.icao24}" style="cursor:pointer" onclick="selectFlight('${f.icao24}')">
+      <circle cx="${p.x}" cy="${p.y}" r="${r+6}" fill="transparent"/>
+      <circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${col}" ${isSel?'stroke="#00ff41" stroke-width="1.5"':''}/>
+      ${headingLine}${label}
+    </g>`;
+  }).join('');
+}
+
+// ── Flight list / card ────────────────────────────────────────────────────
+function renderCard() {
+  const el = document.getElementById('sel-card');
+  if (!selected) { el.innerHTML='<div style="color:var(--green-dim);font-size:11px">SELECT AN AIRCRAFT TO SEE DETAILS</div>'; return; }
+  const f = selected;
+  const dist = Math.round(haversine(userLat,userLon,f.lat,f.lon));
+  const route = routeCache[f.icao24];
+  const oLabel = route?.origin ? airportLabel(route.origin) : (route?'—':'...');
+  const dLabel = route?.dest   ? airportLabel(route.dest)   : (route?'—':'...');
+  const routeHTML = route?.origin||route?.dest
+    ? `<div class="route-line">✈ ${oLabel} → ${dLabel}</div>`
+    : `<div style="color:var(--green-dim);font-size:10px">ROUTE: ${route?'N/A':'FETCHING...'}</div>`;
+  el.innerHTML=`
+    <div class="callsign-big">${f.callsign||f.icao24}</div>
+    ${routeHTML}
+    <div class="grid2">
+      <div><span class="lbl">ALTITUDE  </span><span>${f.alt?f.alt.toLocaleString()+' ft':'—'}</span></div>
+      <div><span class="lbl">SPEED     </span><span>${f.speed?f.speed+' kn':'—'}</span></div>
+      <div><span class="lbl">HEADING   </span><span>${f.heading!=null?f.heading+'°':'—'}</span></div>
+      <div><span class="lbl">DISTANCE  </span><span>${dist} km</span></div>
+      <div><span class="lbl">COUNTRY   </span><span>${f.country||'—'}</span></div>
+      <div><span class="lbl">ICAO24    </span><span>${f.icao24}</span></div>
+    </div>`;
+}
+
+function renderList() {
+  const el = document.getElementById('flight-list');
+  const sorted = [...flights].sort((a,b)=>(b.alt||0)-(a.alt||0));
+  el.innerHTML = sorted.map(f => {
+    const isSel = selected&&selected.icao24===f.icao24;
+    const route = routeCache[f.icao24];
+    let rs='·';
+    if(route?.origin||route?.dest){
+      const o=route.origin?(airports[route.origin]?.iata||route.origin):'?';
+      const d=route.dest?(airports[route.dest]?.iata||route.dest):'?';
+      rs=`${o}→${d}`;
+    } else if(route) rs='—';
+    return `<div class="fl${isSel?' sel':''}" onclick="selectFlight('${f.icao24}')">
+      <span class="cs">${(f.callsign||f.icao24).slice(0,8)}</span>
+      <span class="muted">${f.alt?f.alt.toLocaleString():'—'}</span>
+      <span class="muted">${f.heading!=null?f.heading+'°':'—'}</span>
+      <span class="muted">${f.speed||'—'}</span>
+      <span class="rs">${rs}</span>
+    </div>`;
+  }).join('');
+}
+
+function selectFlight(icao24) {
+  selected = flights.find(f=>f.icao24===icao24)||null;
+  renderList(); renderCard(); redrawBlips();
+  if (selected&&!routeCache[selected.icao24]&&selected.callsign) fetchRoute(selected.icao24,selected.callsign);
+  if (selected) map.panTo([selected.lat,selected.lon],{animate:true,duration:0.5});
+}
+
+// ── OpenSky fetch ─────────────────────────────────────────────────────────
+async function fetchFlights() {
+  const pad = radiusKm/111*1.1;
+  const url=`https://opensky-network.org/api/states/all?lamin=${userLat-pad}&lomin=${userLon-pad*1.8}&lamax=${userLat+pad}&lomax=${userLon+pad*1.8}`;
+  try {
+    const r = await fetch(url);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data = await r.json();
+    flights=(data.states||[]).filter(s=>s[5]&&s[6]&&!s[8]).map(s=>({
+      icao24:s[0],callsign:(s[1]||'').trim()||s[0],
+      lat:s[6],lon:s[5],
+      alt:s[7]?Math.round(s[7]*3.28084):null,
+      heading:s[10]!=null?Math.round(s[10]):null,
+      speed:s[9]?Math.round(s[9]*1.94384):null,
+      country:s[2]
+    })).filter(f=>haversine(userLat,userLon,f.lat,f.lon)<=radiusKm);
+
+    flights.slice(0,15).forEach(f=>{
+      if(f.callsign&&!routeCache[f.icao24]&&!fetchingRoutes.has(f.icao24)) fetchRoute(f.icao24,f.callsign);
+    });
+
+    document.getElementById('traffic-lbl').textContent='TRAFFIC: '+flights.length;
+    document.getElementById('api-lbl').textContent='SRC: OPENSKY';
+  } catch(e) {
+    loadDemoData();
+    document.getElementById('api-lbl').textContent='SRC: DEMO';
+  }
+
+  if(selected){const u=flights.find(f=>f.icao24===selected.icao24);if(u){selected=u;renderCard();}}
+  renderList(); redrawBlips();
+  document.getElementById('time-lbl').textContent=new Date().toUTCString().slice(17,25)+' UTC';
+}
+
+function loadDemoData(){
+  const demo=[
+    ['SAS1234','Norway',33000,180,440],['NOZ567','Norway',24000,270,380],
+    ['WIF123','Norway',18000,045,340],['DLH999','Germany',37000,200,470],
+    ['SAS009','Norway',28000,355,420],['NAX301','Norway',31000,130,410],
+  ];
+  flights=demo.map(([cs,co,alt,hdg,spd])=>{
+    const a=Math.random()*Math.PI*2,d=(0.15+Math.random()*0.75)*radiusKm;
+    return{icao24:cs.toLowerCase(),callsign:cs,lat:userLat+d/111*Math.cos(a),lon:userLon+d/111*Math.sin(a)/Math.cos(userLat*Math.PI/180),alt,heading:hdg,speed:spd,country:co};
+  });
+  document.getElementById('traffic-lbl').textContent='TRAFFIC: '+flights.length+' (DEMO)';
+}
+
+// ── Location search (Nominatim) ───────────────────────────────────────────
+let searchTimeout;
+document.addEventListener('DOMContentLoaded',()=>{
+  const inp=document.getElementById('search-input');
+  inp.addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
+  inp.addEventListener('input',()=>{
+    clearTimeout(searchTimeout);
+    searchTimeout=setTimeout(()=>{ if(inp.value.length>2) doSearch(); },600);
+  });
+  document.addEventListener('click',e=>{
+    if(!document.getElementById('search-wrap').contains(e.target))
+      document.getElementById('search-results').style.display='none';
+  });
+});
+
+async function doSearch(){
+  const q=document.getElementById('search-input').value.trim();
+  if(!q) return;
+  try{
+    const r=await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&accept-language=en`);
+    const data=await r.json();
+    const box=document.getElementById('search-results');
+    if(!data.length){box.innerHTML='<div class="sr-item" style="color:var(--green-dim)">No results</div>';box.style.display='block';return;}
+    box.innerHTML=data.map((d,i)=>`<div class="sr-item" onclick="pickLocation(${d.lat},${d.lon},'${d.display_name.split(',').slice(0,2).join(',').replace(/'/g,"\\'")}',${i})">${d.display_name.split(',').slice(0,3).join(', ')}</div>`).join('');
+    box.style.display='block';
+  }catch(e){console.warn('Search failed',e);}
+}
+
+function pickLocation(lat,lon,label){
+  userLat=+lat; userLon=+lon;
+  document.getElementById('search-results').style.display='none';
+  document.getElementById('search-input').value='';
+  document.getElementById('pos-lbl').textContent=label.toUpperCase();
+  map.setView([userLat,userLon],zoomForRadius(radiusKm),{animate:true});
+  centerMarker.setLatLng([userLat,userLon]);
+  selected=null; flights=[];
+  clearInterval(fetchInterval);
+  fetchFlights();
+  fetchInterval=setInterval(fetchFlights,15000);
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+function startApp(lat,lon,label){
+  userLat=lat; userLon=lon;
+  document.getElementById('splash').style.display='none';
+  document.getElementById('app').style.display='flex';
+  document.getElementById('pos-lbl').textContent=label;
+
+  // size map panel
+  const mw=document.getElementById('map-radar-wrap');
+  const avail=Math.min(window.innerHeight-90,window.innerWidth*0.55,600);
+  mw.style.width=avail+'px';
+
+  initMap();
+  loadAirports();
+  fetchFlights();
+  fetchInterval=setInterval(fetchFlights,15000);
+  animateSweep();
+
+  document.getElementById('range-sl').addEventListener('input',e=>{
+    radiusKm=+e.target.value;
+    document.getElementById('range-lbl').textContent=radiusKm+' km';
+    map.setZoom(zoomForRadius(radiusKm),{animate:true});
+    drawRadarOverlay();
+    fetchFlights();
+  });
+
+  window.addEventListener('resize',()=>{ drawRadarOverlay(); });
+}
+
+function useMosjoen(){ startApp(65.8342,13.1920,'MOSJØEN, NORDLAND'); }
+
+function requestLoc(){
+  document.getElementById('err-msg').textContent='';
+  if(!navigator.geolocation){useMosjoen();return;}
+  navigator.geolocation.getCurrentPosition(
+    p=>startApp(p.coords.latitude,p.coords.longitude,'YOUR LOCATION'),
+    ()=>{document.getElementById('err-msg').textContent='Denied — loading Mosjøen.';setTimeout(useMosjoen,1200);},
+    {timeout:8000}
+  );
+}
+</script>
+</body>
+</html>
